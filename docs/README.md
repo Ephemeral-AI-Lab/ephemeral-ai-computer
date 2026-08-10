@@ -243,8 +243,8 @@ above, then dive into the area you're working on.
 | [17. Isolate JavaScript runtime](./17_isolate_javascript.md) | ECMAScript modules, durable imports, configured libraries, durable `node:fs/promises`, trusted `ws:git` / `ws:artifacts`, and managed lifecycle. |
 | [18. Runtime migration](./18_runtime_migration.md) | Breaking preview-API mappings from public shell and script-execution surfaces to `workspace.runtime`. |
 | [19. Performance](./19_performance.md) | Filesystem benchmarks: `fs-bench` numbers, an `npm install` comparison, and how to reproduce them. |
-| [20. Ephemeral AI FS replacement](./20_ephemeral_ai_fs.md) | How Ephemeral AI FS replaces DOFS while Durable Object SQLite, sync, `computerd`, and FUSE remain. |
-| [21. Ephemeral AI FS swap](./21_ephemeral_ai_fs_swap.md) | Computer-side checklist after the filesystem packages are ready. |
+| [20. Ephemeral AI FS replacement](./20_ephemeral_ai_fs.md) | How Ephemeral AI FS becomes the default while DOFS remains an optional comparison engine. |
+| [21. Ephemeral AI FS swap](./21_ephemeral_ai_fs_swap.md) | Computer-side swap and benchmark checklist after the filesystem packages are ready. |
 
 ## High-level API
 

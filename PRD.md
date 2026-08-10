@@ -12,25 +12,31 @@ EphemeralAI Computer is an independent fork of Cloudflare Computer that adds
 branchable multi-agent workspaces through EphemeralAI FS. It keeps Cloudflare
 Computer's Durable Object, runtime, `computerd`, FUSE, and synchronization
 architecture. It replaces the current `@cloudflare/dofs` filesystem subsystem
-with EphemeralAI FS and adds a versioned content sync protocol plus a
-first-class branch and publication API.
+with EphemeralAI FS as the default production engine and adds a versioned
+content sync protocol plus a first-class branch and publication API. Computer
+retains DOFS as an optional comparison engine for controlled benchmarks.
 
-EphemeralAI FS is the complete replacement for `WorkspaceFilesystem`, the DOFS
-filesystem primitives and schema, and `SQLiteWorkspaceProvider`. It does not
-replace Durable Objects or SQLite. Durable Object SQLite remains the
-authoritative database through the EphemeralAI FS Cloudflare adapter.
+EphemeralAI FS is the default production replacement for
+`WorkspaceFilesystem`, the DOFS filesystem primitives and schema, and
+`SQLiteWorkspaceProvider`. It does not replace Durable Objects or SQLite.
+Durable Object SQLite remains the authoritative database through the
+EphemeralAI FS Cloudflare adapter.
 EphemeralAI Computer connects that filesystem to temporary containers and
 worker runtimes, assigns private branches to agents, and publishes accepted
 changes back to the durable main workspace.
+
+DOFS is never an automatic fallback. A workspace selects one engine when it is
+created, and its authoritative and execution-side databases use that engine
+for the workspace lifetime.
 
 This project is not an official Cloudflare product.
 
 ## Upstream baseline
 
 The repository begins as a GitHub fork of `cloudflare/computer` and preserves
-its history and MIT license. The upstream fixed 512 KiB content path remains a
-temporary migration and comparison baseline while the replacement is
-developed. It is not a second filesystem engine in the finished architecture.
+its history and MIT license. The upstream fixed 512 KiB content path remains an
+optional comparison engine so benchmarks can measure both filesystems through
+the same Computer boundary.
 
 The product must keep an `upstream` Git remote and document how maintainers
 fetch, test, and merge upstream changes. Fork-specific code should avoid moving
@@ -95,9 +101,9 @@ EphemeralAI FS owns:
 - conflict-aware publication, recovery, and garbage collection;
 - portable Node.js and Durable Object SQLite adapters.
 
-The Computer fork must not duplicate those algorithms. After cutover, neither
-the authoritative Durable Object path nor the local `computerd` path may use
-`@cloudflare/dofs` as a filesystem implementation.
+The Computer fork must not duplicate those algorithms. EphemeralAI FS is the
+default production path. Computer retains `@cloudflare/dofs` behind the same
+engine boundary only when a caller explicitly selects the comparison engine.
 
 ## Target users
 
@@ -113,8 +119,8 @@ The first users are teams building:
 ## Goals
 
 1. Preserve a passing, observable upstream Computer baseline.
-2. Replace the `@cloudflare/dofs` filesystem subsystem with EphemeralAI FS
-   without replacing Durable Objects or SQLite.
+2. Make EphemeralAI FS the default production filesystem without replacing
+   Durable Objects or SQLite.
 3. Keep authoritative and container-side EphemeralAI FS representations
    compatible.
 4. Give each agent a private branch and execution view.
@@ -122,16 +128,18 @@ The first users are teams building:
 6. Merge independent paths and return explicit same-path conflicts.
 7. Negotiate protocol capabilities before moving EphemeralAI FS manifests or
    branch data.
-8. Provide migration, preview rollback, and benchmark paths from the legacy
-   DOFS representation to EphemeralAI FS.
+8. Provide migration and benchmark paths from DOFS to EphemeralAI FS while
+   retaining DOFS as an explicit comparison control.
 9. Keep future upstream merges reviewable.
 
 ## Non-goals for the first release
 
 - Replacing Durable Objects with a new database or coordination service.
 - Rewriting `computerd`, FUSE, or the container runtime from scratch.
-- Removing the legacy filesystem before migration and rollback checks pass.
-- Keeping two filesystem engines as a permanent product mode.
+- Removing DOFS from the repository or benchmark harness.
+- Using DOFS as the production default or an automatic fallback.
+- Promising EphemeralAI FS branch features when the DOFS comparison engine is
+  selected.
 - Supporting an old `computerd` process against a new protocol by guessing.
 - Semantic source-code merges.
 - Running several authoritative writers for one workspace identity.
@@ -156,8 +164,8 @@ Cloudflare SQLite adapter                   Node.js SQLite adapter
 Durable Object SQLite                       local SQLite mirror
 ```
 
-EphemeralAI FS replaces `@cloudflare/dofs` on both sides of the sync boundary.
-The database adapters connect it to SQLite; they are not substitute filesystem
+EphemeralAI FS is the default engine on both sides of the sync boundary. Its
+database adapters connect it to SQLite; they are not substitute filesystem
 engines. Computer continues to own workspace identity, remote procedure calls,
 sync transport, FUSE, and process execution.
 
@@ -165,11 +173,23 @@ sync transport, FUSE, and process execution.
 for Workers remote procedure calls or add helpers built from its primitives,
 but it must not preserve `WorkspaceFilesystem` as a second semantic API.
 
+Computer also keeps an internal engine selector:
+
+```text
+ephemeral-ai-fs   default production and branch-capable engine
+dofs              optional comparison engine for tests and benchmarks
+```
+
+Both selections present the `EphemeralFilesystem`-compatible Computer surface.
+The DOFS adapter may report unsupported capabilities for branch-only features.
+An engine choice applies to both sides of sync and cannot change while a
+workspace is open.
+
 The planned repository additions are:
 
 ```text
 packages/
-    dofs/                       temporary legacy migration source
+    dofs/                       retained benchmark and comparison engine
     ephemeral-ai-fs-bridge/     workspace, sync, and VFS compatibility
     rpc/                        protocol capabilities and branch data
     computer/                   Workspace and branch public API
@@ -200,18 +220,21 @@ Each upstream update must record the source revision, run the unchanged
 baseline checks first, and separate conflict resolution from product changes
 where practical.
 
-### EC-2: Filesystem replacement
+### EC-2: Swappable filesystem engines
 
-During migration, Computer may expose a narrow internal selector with two
-implementations:
+Computer must expose a narrow engine selector with two implementations:
 
-- `legacy-dofs`, the upstream-compatible rollback source; and
-- `ephemeral-ai-fs`, the replacement.
+- `ephemeral-ai-fs`, the default production and branch-capable engine; and
+- `dofs`, the optional upstream comparison engine.
 
-The first integration must require explicit replacement selection. EphemeralAI
-FS becomes the only filesystem path after migration, rollback, and full
-pipeline acceptance tests pass. The final architecture must not expose a
-permanent filesystem-engine choice or load `@cloudflare/dofs` at runtime.
+Omitting the option must select `ephemeral-ai-fs`. Selecting `dofs` must be
+explicit and intended for tests, benchmarks, or upstream compatibility checks.
+Computer must never fall back from one engine to the other after an error.
+
+The engine choice is fixed for the workspace lifetime and must select matching
+authoritative and execution-side implementations. The two engines use separate
+databases and schema identities. A database created by one engine must not be
+opened by the other.
 
 ### EC-3: Computer compatibility bridge
 
@@ -290,7 +313,7 @@ An empty sync must remain cheap. A reconnect must resume from durable
 watermarks or request a safe reconciliation. Partial application must not
 advance the visible revision.
 
-### EC-9: Migration and rollback
+### EC-9: Migration and benchmark isolation
 
 Workspaces need an explicit migration state and schema version. Migration must
 be restartable and must not delete the legacy representation until the
@@ -299,8 +322,9 @@ return to the legacy representation during the preview migration window
 without restoring from an external backup.
 
 The first milestone may support only newly created EphemeralAI FS workspaces,
-but the API and schema must reserve a clear migration path. Legacy rollback is
-a migration safety mechanism, not a permanent runtime mode.
+but the API and schema must reserve a clear migration path. Keeping the DOFS
+comparison engine does not permit opening the same database with both engines.
+Benchmarks must create isolated workspaces from the same logical fixture.
 
 ### EC-10: Recovery and lifecycle
 
@@ -323,14 +347,16 @@ Metrics must distinguish logical changed bytes, transferred bytes, retained
 branch payload, database growth, publish latency, conflicts, retries, and
 garbage collection.
 
-### EC-12: Cutover compatibility
+### EC-12: Compatibility and comparison
 
-The legacy engine must continue to pass upstream tests and examples until the
-cutover is accepted. EphemeralAI FS must preserve the documented
+The DOFS comparison engine must continue to pass the common upstream tests and
+examples. EphemeralAI FS must preserve the documented
 `workspace.fs`, sync, and FUSE behavior or identify an intentional API change.
-After cutover, production filesystem calls must not enter `@cloudflare/dofs`.
-A replacement failure must identify the filesystem and protocol layer rather
-than presenting as a generic FUSE or network error.
+After cutover, omitted engine configuration must always select EphemeralAI FS.
+DOFS remains callable only through explicit comparison configuration. A
+filesystem failure must identify the selected engine and protocol layer rather
+than presenting as a generic FUSE or network error, and must never trigger an
+automatic engine change.
 
 ## Security and integrity requirements
 
@@ -347,6 +373,17 @@ than presenting as a generic FUSE or network error.
 All performance comparisons must use the same upstream revision, build mode,
 fixture, container image, warm-up, and run count. Reports must label the
 measured boundary.
+
+The benchmark harness must run each common filesystem workload once with
+`ephemeral-ai-fs` and once with `dofs`, using fresh isolated databases created
+from the same logical fixture. It must report the selected engine, supported
+capabilities, logical bytes, database growth, transferred bytes, elapsed time,
+and resource use. It must not reuse one engine's cache or database for the
+other run.
+
+Branch and publication benchmarks apply only to engines that report those
+capabilities. A DOFS result marked unsupported is clearer than a compatibility
+shim that changes the workload.
 
 The acceptance suite must include:
 
@@ -379,7 +416,7 @@ multi-agent behavior rather than claiming improvement from one metric.
 - Map every `@cloudflare/dofs` consumer in `computer`, `computerd`, sync, FUSE,
   mounts, Git, and tools.
 - Define Computer-owned compatibility interfaces for those consumers.
-- Preserve the legacy baseline for migration comparison and rollback tests.
+- Keep DOFS behind the engine selector as the comparison control.
 
 ### Milestone 2: EphemeralAI FS replacement
 
@@ -406,15 +443,17 @@ multi-agent behavior rather than claiming improvement from one metric.
 
 - Add migration and rollback for existing workspaces.
 - Complete full Computer, `computerd`, FUSE, shell, pull, and restart tests.
-- Remove the legacy DOFS runtime path after the cutover gates pass.
+- Make EphemeralAI FS the default and keep DOFS as an explicit benchmark
+  selection.
+- Add paired benchmark runs over fresh, equivalent workspaces.
 - Publish preview documentation with known limits and reproducible benchmarks.
 
 ## Preview acceptance criteria
 
 - The repository can merge the selected current upstream baseline and pass its
   unchanged checks.
-- The migration baseline matches upstream behavior and wire results before
-  cutover.
+- The DOFS comparison engine continues to match common upstream behavior and
+  wire results.
 - EphemeralAI FS passes filesystem conformance on both authoritative and local
   mirror databases.
 - Unsupported protocol pairs fail before applying data.
@@ -427,16 +466,17 @@ multi-agent behavior rather than claiming improvement from one metric.
 - The full push, `computerd`, FUSE, shell, pull, publish, and verify path passes
   through EphemeralAI FS.
 - Migration and rollback tests preserve file content and namespace metadata.
-- Production filesystem paths contain no runtime import of `@cloudflare/dofs`
-  after cutover.
+- Omitted engine configuration selects EphemeralAI FS, while explicit `dofs`
+  selection runs the same common filesystem benchmark surface.
+- An engine error never causes automatic fallback or cross-engine database
+  access.
 - Benchmarks publish raw data, environment details, and limitations.
 - Documentation identifies planned behavior that is not yet implemented.
 
 ## Risks
 
 - Upstream changes may overlap the storage and synchronization seams.
-- Temporarily supporting two representations increases migration and test
-  cost.
+- Keeping the DOFS comparison engine increases maintenance and test cost.
 - A protocol error can make authoritative and mirror state diverge.
 - File-level conflicts may reject changes that a source-aware merge could
   combine.
@@ -448,9 +488,9 @@ multi-agent behavior rather than claiming improvement from one metric.
 
 - Should branch identity be part of every existing sync call or represented by
   a branch-scoped session capability?
-- Should legacy and EphemeralAI FS representations share one database or use
-  isolated schema namespaces during preview?
-- Which gates end the rollback window and remove the legacy runtime path?
+- Which engine-neutral fixture format should seed both isolated benchmark
+  databases?
+- How often should the DOFS comparison baseline follow upstream changes?
 - Should Computer use the EphemeralAI FS 30-day branch retention default or
   configure a longer product-level window?
 - How should a caller reopen a conflicted branch for manual resolution?

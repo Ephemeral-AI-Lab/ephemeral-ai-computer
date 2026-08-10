@@ -6,9 +6,10 @@
 
 The swap should be small. Computer should import a finished filesystem, connect
 it to existing workspace and execution boundaries, verify the full path, and
-remove `@cloudflare/dofs`. Filesystem algorithms, replication rules, database
-schema behavior, and the Node virtual filesystem provider belong in Ephemeral
-AI FS packages.
+make it the default engine. Keep `@cloudflare/dofs` as an optional comparison
+engine for controlled tests and benchmarks. Filesystem algorithms, replication
+rules, database schema behavior, and the Node virtual filesystem provider
+belong in Ephemeral AI FS packages.
 
 ## Starting condition
 
@@ -36,9 +37,24 @@ Treat more than 500 lines of new Computer-side production logic as a design
 warning. It usually means replication, provider, lifecycle, or compatibility
 behavior is missing from an Ephemeral AI FS package.
 
-The later removal of `packages/dofs` deletes about 15,500 existing TypeScript,
-JSON, and Markdown lines. That deletion is separate from the small wiring
-change.
+`packages/dofs` remains in the repository as the benchmark control. Its code
+does not count toward the small Ephemeral AI FS wiring budget.
+
+## Add the engine selector
+
+Define one narrow Computer engine interface and two factories:
+
+```ts
+type FilesystemEngine = "ephemeral-ai-fs" | "dofs";
+```
+
+Omitting the option selects `ephemeral-ai-fs`. Tests and benchmarks may select
+`dofs` explicitly. The selected factory must create matching authoritative and
+execution-side filesystems and expose their capabilities.
+
+Do not change engines while a workspace is open. Do not fall back to DOFS when
+Ephemeral AI FS returns an error. The engines use separate databases and must
+never open each other's schema.
 
 ## Replace the authoritative filesystem
 
@@ -76,8 +92,9 @@ const vfs = createNodeVfsProvider(filesystem);
 ```
 
 Keep FUSE, the shim, process execution, and mount selection in Computer. Remove
-the `SQLiteWorkspaceProvider` prototype patch and every direct dependency on
-DOFS buffers, rows, or schema details.
+the `SQLiteWorkspaceProvider` prototype patch from the Ephemeral AI FS path and
+every cross-engine dependency on DOFS buffers, rows, or schema details. Keep
+the existing provider contained inside the DOFS comparison implementation.
 
 ## Replace synchronization
 
@@ -97,6 +114,10 @@ The Computer driver should only:
 Conflict detection, publication, content verification, cursor meaning, and
 atomic application remain Ephemeral AI FS behavior.
 
+The DOFS comparison engine may retain its existing sync operations behind the
+same Computer transport boundary. Do not mix DOFS changes or watermarks with
+an Ephemeral AI FS workspace.
+
 ## Bind branches to execution
 
 When Computer starts or reconnects an execution backend, pass the selected
@@ -112,13 +133,13 @@ container must not publish or discard its branch.
 Make the data decision before adding a dual-engine path:
 
 - If preview workspaces are disposable, create new Ephemeral AI FS databases
-  and skip legacy migration. Remove DOFS in the same cutover series.
+  and skip legacy migration. Keep DOFS only for isolated comparison runs.
 - If existing workspaces must survive, build a separate, restartable migration
   that copies and verifies namespace, content, metadata, and sync state before
   switching the active format.
 
-Do not keep a permanent engine selector. Legacy selection exists only for a
-tested preview rollback window when migration is required.
+Keep the selector for benchmarks, but do not expose it as automatic recovery.
+Migration and benchmark selection are separate concerns.
 
 ## Update Computer consumers
 
@@ -133,7 +154,9 @@ Pay particular attention to:
 - test fixtures that inspect DOFS tables directly.
 
 Prefer adapting these consumers to `EphemeralFilesystem`. Do not add a broad
-class that recreates the old DOFS surface.
+class that recreates the old DOFS surface. The DOFS comparison adapter should
+implement only the common Computer engine interface and report unsupported
+branch capabilities clearly.
 
 ## Verify the replacement
 
@@ -153,25 +176,27 @@ Also run the existing Computer filesystem, sync, FUSE, Git, mount, tool, and
 end-to-end suites. Replace tests that assert DOFS tables with public behavior or
 Ephemeral AI FS maintenance results.
 
-## Remove DOFS
+## Preserve the benchmark control
 
-After the replacement and any migration window pass:
+After Ephemeral AI FS becomes the default:
 
-1. remove `@cloudflare/dofs` from package dependencies;
-2. remove all production imports and aliases;
-3. delete `packages/dofs`;
-4. remove DOFS schema, row-count, and buffer-specific diagnostics;
-5. remove the temporary engine selector and rollback code; and
-6. verify that repository search finds no runtime reference to
-   `@cloudflare/dofs`.
+1. retain `packages/dofs` and its upstream-compatible tests;
+2. keep its imports inside the DOFS engine adapter and benchmark harness;
+3. make `ephemeral-ai-fs` the default when configuration is omitted;
+4. require explicit `dofs` selection for a comparison run;
+5. keep engine-specific schemas, diagnostics, and databases isolated; and
+6. run the same common benchmark fixture against both engines.
 
-Historical documentation may name DOFS when it clearly describes the removed
-implementation. Active API and architecture documentation must describe
-Ephemeral AI FS.
+Benchmark reports must state the selected engine, capabilities, fixture,
+logical bytes, database growth, transferred bytes, timing, and resource use.
+They must use fresh databases and must not warm one engine with the other's
+run. Branch-only benchmarks may mark DOFS unsupported instead of changing the
+workload.
 
 ## Completion condition
 
-The swap is complete when Computer contains only transport, workspace,
-execution, and user-facing integration code; Ephemeral AI FS owns every
-filesystem semantic and persisted representation; the full execution path
-passes; and no production code imports `@cloudflare/dofs`.
+The swap is complete when the default Computer path contains only transport,
+workspace, execution, and user-facing integration code; Ephemeral AI FS owns
+every filesystem semantic and persisted representation on that path; the full
+execution path passes; omitted configuration selects Ephemeral AI FS; and DOFS
+runs only when the comparison engine is selected explicitly.

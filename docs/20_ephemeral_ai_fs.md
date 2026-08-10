@@ -5,11 +5,14 @@
 > implementation still uses `@cloudflare/dofs` until the migration and cutover
 > requirements below pass.
 
-Ephemeral AI FS is the complete replacement for the filesystem subsystem used
-by Ephemeral AI Computer. It replaces the current filesystem facade,
-namespace and content engine, schema, and Node-compatible virtual filesystem
-provider. It does not replace Durable Objects, Durable Object SQLite,
-`computerd`, FUSE, or the execution runtimes.
+Ephemeral AI FS is the default production replacement for the filesystem
+subsystem used by Ephemeral AI Computer. It replaces the current filesystem
+facade, namespace and content engine, schema, and Node-compatible virtual
+filesystem provider on the default path. It does not replace Durable Objects,
+Durable Object SQLite, `computerd`, FUSE, or the execution runtimes.
+
+Computer retains DOFS as an optional comparison engine. It can be selected
+explicitly by tests and benchmarks but is never an automatic fallback.
 
 ## Current boundary
 
@@ -59,9 +62,19 @@ Cloudflare SQLite adapter                   Node.js SQLite adapter
 Durable Object SQLite                       local SQLite mirror
 ```
 
-There is one filesystem implementation on both sides: Ephemeral AI FS. The two
-database adapters connect the same portable engine to different SQLite
-runtimes. They do not implement alternate filesystem behavior.
+One selected filesystem implementation runs on both sides of a workspace.
+Ephemeral AI FS is the default. DOFS remains available through an explicit
+comparison selection. The two Ephemeral AI FS database adapters connect the
+same portable engine to different SQLite runtimes; they do not implement
+alternate filesystem behavior.
+
+```text
+ephemeral-ai-fs   default production and branch-capable engine
+dofs              optional comparison engine for tests and benchmarks
+```
+
+The engines use separate databases. Computer must not switch engines while a
+workspace is open or fall back after an error.
 
 ## Ownership
 
@@ -74,6 +87,7 @@ runtimes. They do not implement alternate filesystem behavior.
 | `computerd`, FUSE, mounts, and process execution | Ephemeral AI Computer |
 | Content, branches, publication, recovery, and collection | Ephemeral AI FS |
 | Cloudflare and Node.js SQLite database adapters | Ephemeral AI FS |
+| DOFS comparison adapter and benchmark selection | Ephemeral AI Computer |
 | Durable Object SQLite service | Cloudflare runtime |
 
 Computer-owned integration code may transport calls across Workers remote
@@ -93,6 +107,10 @@ Differences from the old `WorkspaceFilesystem` API are preview API migration
 changes. Each difference must be listed explicitly and covered by migration
 documentation rather than hidden behind a permanent compatibility API.
 
+The DOFS comparison adapter must present the same common Computer filesystem
+surface. It may report branch and publication capabilities as unsupported; it
+must not emulate them with different semantics.
+
 The branch API is additive:
 
 ```ts
@@ -107,8 +125,8 @@ main or another agent's branch.
 
 ## Migration and cutover
 
-The legacy representation may coexist with Ephemeral AI FS only during the
-preview migration window:
+The legacy representation may coexist with Ephemeral AI FS during migration
+and afterward as the isolated comparison engine:
 
 1. Record the unmodified upstream behavior and wire results.
 2. Add the Computer compatibility bridge and both Ephemeral AI FS database
@@ -117,11 +135,12 @@ preview migration window:
    authoritative and execution sides.
 4. Migrate existing workspaces restartably, verify the new representation,
    and retain a tested rollback path for the preview window.
-5. Make Ephemeral AI FS the only production filesystem path and remove runtime
-   imports of `@cloudflare/dofs`.
+5. Make Ephemeral AI FS the default production path and retain DOFS behind the
+   explicit comparison selector.
 
-The migration may use an internal engine selector while both representations
-exist. That selector is not a permanent public feature.
+The engine selector is an internal benchmark and compatibility feature, not an
+automatic fallback. Each workspace records one engine and uses it for its
+authoritative and execution-side stores.
 
 ## Cutover criteria
 
@@ -135,8 +154,10 @@ The replacement is complete only when:
 - the full push, execute, pull, publish, and verify path preserves content and
   namespace metadata;
 - unsupported protocol pairs fail before changing either side; and
-- production filesystem paths have no runtime dependency on
-  `@cloudflare/dofs`.
+- omitted engine configuration selects Ephemeral AI FS;
+- explicit DOFS selection runs the common comparison workload; and
+- an engine error never causes automatic fallback or cross-engine database
+  access.
 
 Durable Object SQLite remains the authoritative database before, during, and
 after this cutover.

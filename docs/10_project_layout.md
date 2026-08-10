@@ -16,15 +16,17 @@ The workspace ships as a monorepo. Each published package lives under
 ## Planned filesystem replacement
 
 The tree below describes the checked-in upstream layout. In the Ephemeral AI
-Computer target, Ephemeral AI FS replaces the filesystem implementation in
-`packages/dofs`. The replacement covers `WorkspaceFilesystem`, filesystem
-primitives and schema, content storage, and `SQLiteWorkspaceProvider`.
+Computer target, Ephemeral AI FS becomes the default production implementation
+for `WorkspaceFilesystem`, filesystem primitives and schema, content storage,
+and `SQLiteWorkspaceProvider` behavior.
 
-`packages/dofs` may remain temporarily as a migration source and rollback
-fixture. It is not a permanent second engine. A planned
+`packages/dofs` remains as an isolated, explicitly selected comparison engine.
+It is not a production fallback. A planned
 `packages/ephemeral-ai-fs-bridge` package connects Computer-owned
 `workspace.fs`, sync, and Node virtual filesystem consumers to Ephemeral AI FS
-without duplicating filesystem behavior.
+without duplicating filesystem behavior. The DOFS adapter implements the same
+common Computer interface, uses a separate database, and reports unsupported
+branch capabilities.
 
 Durable Object SQLite and local SQLite remain below the new library through
 its Cloudflare and Node.js database adapters. See

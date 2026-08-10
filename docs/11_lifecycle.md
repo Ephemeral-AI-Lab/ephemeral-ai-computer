@@ -10,8 +10,10 @@
 > behaviour; the durability gaps it surfaces are deferred work.
 >
 > The Ephemeral AI Computer target keeps this Durable Object and container
-> lifecycle but replaces the DOFS filesystem on both sides with Ephemeral AI
-> FS. Durable Object SQLite remains authoritative. See
+> lifecycle and uses Ephemeral AI FS by default on both sides. Benchmarks may
+> explicitly select DOFS on both sides through the comparison adapter. The
+> selected engine is fixed for the workspace lifetime, and Durable Object
+> SQLite remains authoritative. See
 > [20. Ephemeral AI FS replacement](./20_ephemeral_ai_fs.md).
 
 ## Architecture
