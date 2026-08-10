@@ -140,3 +140,6 @@ The replacement is complete only when:
 
 Durable Object SQLite remains the authoritative database before, during, and
 after this cutover.
+
+Use [21. Ephemeral AI FS swap](./21_ephemeral_ai_fs_swap.md) as the Computer-side
+implementation checklist after the filesystem packages are ready.

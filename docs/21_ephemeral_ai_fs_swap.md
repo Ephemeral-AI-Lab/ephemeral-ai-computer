@@ -1,0 +1,177 @@
+# 21. Ephemeral AI FS swap
+
+> [!NOTE]
+> This is the Computer-side work list to use after Ephemeral AI FS is complete.
+> It is not an implementation plan for the filesystem itself.
+
+The swap should be small. Computer should import a finished filesystem, connect
+it to existing workspace and execution boundaries, verify the full path, and
+remove `@cloudflare/dofs`. Filesystem algorithms, replication rules, database
+schema behavior, and the Node virtual filesystem provider belong in Ephemeral
+AI FS packages.
+
+## Starting condition
+
+Do not begin the Computer swap until released Ephemeral AI FS packages provide:
+
+- the complete `EphemeralFilesystem` and branch APIs;
+- Durable Object SQLite and Node.js SQLite adapters;
+- host-neutral revision and object replication operations;
+- a Node-compatible virtual filesystem provider for `computerd`;
+- schema initialization, migration, recovery, and garbage collection; and
+- a shared conformance suite that passes on both database adapters.
+
+If one of these capabilities is missing, add it to Ephemeral AI FS. Do not
+reimplement it inside Computer to make the import compile.
+
+## Size budget
+
+The Computer-side swap should target:
+
+- 50 to 150 lines of new production code;
+- 150 to 400 touched production lines, including imports and types; and
+- 200 to 500 touched test lines.
+
+Treat more than 500 lines of new Computer-side production logic as a design
+warning. It usually means replication, provider, lifecycle, or compatibility
+behavior is missing from an Ephemeral AI FS package.
+
+The later removal of `packages/dofs` deletes about 15,500 existing TypeScript,
+JSON, and Markdown lines. That deletion is separate from the small wiring
+change.
+
+## Replace the authoritative filesystem
+
+Change `Workspace` so it receives or opens an Ephemeral AI FS instance through
+the Cloudflare SQLite adapter. The target construction should be equivalent to:
+
+```ts
+const database = createCloudflareSQLiteAdapter(options.storage);
+const filesystem = await EphemeralFS.open({ database });
+const workspace = new Workspace({ filesystem });
+```
+
+`EphemeralFS.open()` is asynchronous while the current `Workspace` constructor
+is synchronous. Resolve that mismatch once, at the workspace lifecycle
+boundary. Prefer an asynchronous factory or the existing `ready()` lifecycle;
+do not add filesystem initialization checks to every operation.
+
+`workspace.fs` must expose the `EphemeralFilesystem` contract. A Workers remote
+procedure call facade may carry those calls across process boundaries, but it
+must mirror the filesystem methods, results, and errors rather than retain
+`WorkspaceFilesystem` as a second API.
+
+Computer-only helpers such as search tools may be built from portable
+filesystem primitives. Keep them outside the filesystem contract.
+
+## Replace the execution-side filesystem
+
+Change `computerd` to open Ephemeral AI FS through the Node.js SQLite adapter
+and pass it to the supplied Node virtual filesystem provider:
+
+```ts
+const database = createNodeSQLiteAdapter(options.database);
+const filesystem = await EphemeralFS.open({ database });
+const vfs = createNodeVfsProvider(filesystem);
+```
+
+Keep FUSE, the shim, process execution, and mount selection in Computer. Remove
+the `SQLiteWorkspaceProvider` prototype patch and every direct dependency on
+DOFS buffers, rows, or schema details.
+
+## Replace synchronization
+
+Keep the remote procedure call transport in Computer, but replace DOFS sync
+functions with the host-neutral Ephemeral AI FS replication package. The wire
+must carry versioned revisions, namespace changes, manifests, missing objects,
+and branch identity without teaching Computer how those values are stored.
+
+The Computer driver should only:
+
+- negotiate protocol and format versions;
+- request and send bounded batches;
+- pass received values to the Ephemeral AI FS importer;
+- persist or replay transport progress through the provided cursor API; and
+- report transport-level errors and metrics.
+
+Conflict detection, publication, content verification, cursor meaning, and
+atomic application remain Ephemeral AI FS behavior.
+
+## Bind branches to execution
+
+When Computer starts or reconnects an execution backend, pass the selected
+branch identity through the session handshake. The authoritative and local
+filesystems must open the same branch view. A missing or terminal branch must
+fail rather than fall back to main.
+
+Keep runtime lifecycle separate from branch lifecycle. Stopping a process or
+container must not publish or discard its branch.
+
+## Decide whether data migration is required
+
+Make the data decision before adding a dual-engine path:
+
+- If preview workspaces are disposable, create new Ephemeral AI FS databases
+  and skip legacy migration. Remove DOFS in the same cutover series.
+- If existing workspaces must survive, build a separate, restartable migration
+  that copies and verifies namespace, content, metadata, and sync state before
+  switching the active format.
+
+Do not keep a permanent engine selector. Legacy selection exists only for a
+tested preview rollback window when migration is required.
+
+## Update Computer consumers
+
+Update the remaining imports and types in `computer`, `rpc`, and `computerd`.
+Pay particular attention to:
+
+- Workers remote procedure call stubs;
+- Git and shell filesystem adapters;
+- mounts and read-only enforcement;
+- tools that use `find`, `grep`, `ls`, or streaming reads;
+- storage and sync metrics; and
+- test fixtures that inspect DOFS tables directly.
+
+Prefer adapting these consumers to `EphemeralFilesystem`. Do not add a broad
+class that recreates the old DOFS surface.
+
+## Verify the replacement
+
+Run the Ephemeral AI FS conformance suite against both databases, then run the
+Computer path through:
+
+1. host-side `workspace.fs` reads and writes;
+2. push to `computerd`;
+3. FUSE and shell reads and writes;
+4. pull to the authoritative filesystem;
+5. branch publication and conflict reporting;
+6. Durable Object and container restart;
+7. reconnect to the same branch; and
+8. garbage collection and integrity verification.
+
+Also run the existing Computer filesystem, sync, FUSE, Git, mount, tool, and
+end-to-end suites. Replace tests that assert DOFS tables with public behavior or
+Ephemeral AI FS maintenance results.
+
+## Remove DOFS
+
+After the replacement and any migration window pass:
+
+1. remove `@cloudflare/dofs` from package dependencies;
+2. remove all production imports and aliases;
+3. delete `packages/dofs`;
+4. remove DOFS schema, row-count, and buffer-specific diagnostics;
+5. remove the temporary engine selector and rollback code; and
+6. verify that repository search finds no runtime reference to
+   `@cloudflare/dofs`.
+
+Historical documentation may name DOFS when it clearly describes the removed
+implementation. Active API and architecture documentation must describe
+Ephemeral AI FS.
+
+## Completion condition
+
+The swap is complete when Computer contains only transport, workspace,
+execution, and user-facing integration code; Ephemeral AI FS owns every
+filesystem semantic and persisted representation; the full execution path
+passes; and no production code imports `@cloudflare/dofs`.
