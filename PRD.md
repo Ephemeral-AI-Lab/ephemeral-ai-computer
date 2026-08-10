@@ -85,7 +85,7 @@ EphemeralAI Computer owns:
 - Durable Object workspace identity and request serialization;
 - runtime and container lifecycle;
 - `computerd`, FUSE, and local workspace mirrors;
-- synchronization and protocol capability negotiation;
+- authenticated synchronization transport and request routing;
 - mapping an agent or execution environment to a filesystem branch;
 - compatibility bridges from Computer's `workspace.fs`, sync, and FUSE
   surfaces to EphemeralAI FS;
@@ -99,6 +99,8 @@ EphemeralAI FS owns:
 - content-defined chunking and copy-on-write pages;
 - filesystem revisions and private branch state;
 - conflict-aware publication, recovery, and garbage collection;
+- host-neutral replication negotiation, batching, durable cursors, staging,
+  retry, and validation;
 - portable Node.js and Durable Object SQLite adapters.
 
 The Computer fork must not duplicate those algorithms. EphemeralAI FS is the
@@ -251,9 +253,12 @@ changes, and revision boundaries consistently.
 
 ### EC-4: Protocol capability negotiation
 
-The synchronization handshake must identify protocol version, chunking mode,
-manifest encoding, and branch support. A peer must reject an unsupported
-combination with a clear error before applying changes.
+The Ephemeral AI FS replication package owns a synchronization handshake that
+identifies protocol version, chunking mode, manifest encoding, page size, and
+branch support. Computer authenticates the peer and carries bounded requests
+through its existing RPC path; it must not interpret or negotiate filesystem
+format fields. The replication endpoint must reject an unsupported combination
+with a clear error before applying changes.
 
 A new peer must never interpret EphemeralAI FS data as a legacy fixed-chunk
 payload. Version negotiation must be covered by supported, unsupported, and
@@ -429,7 +434,8 @@ multi-agent behavior rather than claiming improvement from one metric.
 
 ### Milestone 3: Versioned sync
 
-- Add capability negotiation and EphemeralAI FS manifest and object transfer.
+- Connect authenticated Computer transport to the Ephemeral AI FS replication
+  endpoint and driver.
 - Add mixed-version rejection, reconnect, batching, and integrity tests.
 - Measure cold, warm, and empty sync behavior.
 

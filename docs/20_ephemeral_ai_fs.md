@@ -83,7 +83,8 @@ workspace is open or fall back after an error.
 | Filesystem API, namespace, and metadata | Ephemeral AI FS |
 | `workspace.fs` and branch composition | Ephemeral AI Computer |
 | Durable Object identity and request routing | Ephemeral AI Computer |
-| Sync transport and protocol negotiation | Ephemeral AI Computer |
+| Authentication and sync RPC transport | Ephemeral AI Computer |
+| Replication protocol and durable state | Ephemeral AI FS |
 | `computerd`, FUSE, mounts, and process execution | Ephemeral AI Computer |
 | Content, branches, publication, recovery, and collection | Ephemeral AI FS |
 | Cloudflare and Node.js SQLite database adapters | Ephemeral AI FS |

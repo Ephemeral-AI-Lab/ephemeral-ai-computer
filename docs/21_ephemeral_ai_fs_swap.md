@@ -29,13 +29,14 @@ reimplement it inside Computer to make the import compile.
 
 The Computer-side swap should target:
 
-- 50 to 150 lines of new production code;
+- no more than 100 net-new production lines in aggregate;
 - 150 to 400 touched production lines, including imports and types; and
 - 200 to 500 touched test lines.
 
-Treat more than 500 lines of new Computer-side production logic as a design
-warning. It usually means replication, provider, lifecycle, or compatibility
-behavior is missing from an Ephemeral AI FS package.
+The 100-line aggregate includes engine selection, authoritative opening,
+replication transport forwarding, Node VFS opening, and the branch handshake.
+Treat exceeding it as a design warning: replication, provider, lifecycle, or
+compatibility behavior is probably missing from an Ephemeral AI FS package.
 
 `packages/dofs` remains in the repository as the benchmark control. Its code
 does not count toward the small Ephemeral AI FS wiring budget.
@@ -82,13 +83,15 @@ filesystem primitives. Keep them outside the filesystem contract.
 
 ## Replace the execution-side filesystem
 
-Change `computerd` to open Ephemeral AI FS through the Node.js SQLite adapter
-and pass it to the supplied Node virtual filesystem provider:
+Change `computerd` to use the high-level Node virtual filesystem factory:
 
 ```ts
-const database = createNodeSQLiteAdapter(options.database);
-const filesystem = await EphemeralFS.open({ database });
-const vfs = createNodeVfsProvider(filesystem);
+const nodeFs = await openNodeVfs({
+  database: options.database,
+  branchId: options.branchId,
+  runtime: options.runtime,
+});
+const vfs = nodeFs.provider;
 ```
 
 Keep FUSE, the shim, process execution, and mount selection in Computer. Remove
@@ -103,16 +106,23 @@ functions with the host-neutral Ephemeral AI FS replication package. The wire
 must carry versioned revisions, namespace changes, manifests, missing objects,
 and branch identity without teaching Computer how those values are stored.
 
-The Computer driver should only:
-
-- negotiate protocol and format versions;
-- request and send bounded batches;
-- pass received values to the Ephemeral AI FS importer;
-- persist or replay transport progress through the provided cursor API; and
-- report transport-level errors and metrics.
-
-Conflict detection, publication, content verification, cursor meaning, and
+Computer should only create a replication endpoint around the selected
+filesystem, expose `endpoint.exchange` through its authenticated RPC path, and
+call `replicate` with that transport and an explicit plan. Handshake, format
+negotiation, batching, cursors, staging, retry, content verification, and
 atomic application remain Ephemeral AI FS behavior.
+
+## Enforce the memory profile
+
+For one active workspace, the reference host-process budget is 256 MiB: 128 MiB
+of shared Ephemeral AI FS managed memory, a 16 MiB Node SQLite cache target,
+zero-byte SQLite memory mapping, 20 MiB of replication transport reservation,
+4 MiB of FUSE bridge reservation, and 88 MiB of runtime and native headroom.
+
+These are ceilings, not eager allocations. Several workspaces in one process
+must share one configured process budget; Computer must not grant each mount
+an independent 256 MiB allowance. DOFS comparison runs use a separate database
+and report their own resident-memory high-water.
 
 The DOFS comparison engine may retain its existing sync operations behind the
 same Computer transport boundary. Do not mix DOFS changes or watermarks with
