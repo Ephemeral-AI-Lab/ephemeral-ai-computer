@@ -6,6 +6,13 @@
 > explicitly flagged where the doc reflects an intended target (true
 > streaming `writeFile`, mount-layer error codes); everything else is
 > what ships today.
+>
+> In the Ephemeral AI Computer target architecture, `workspace.fs` is backed by
+> Ephemeral AI FS instead of `@cloudflare/dofs`, and its contract becomes
+> `EphemeralFilesystem`. Workers transport facades mirror that contract rather
+> than retain a second filesystem API. Durable Object SQLite remains the
+> database. See
+> [20. Ephemeral AI FS replacement](./20_ephemeral_ai_fs.md).
 
 `Workspace.fs` is the file API. It's inspired by `node:fs/promises` for
 familiarity — same method names, similar option shapes — but it's a much

@@ -1,5 +1,12 @@
 # Cloudflare Computer
 
+> [!NOTE]
+> This repository is the Ephemeral AI Computer fork. The checked-in code still
+> uses `@cloudflare/dofs` today. The target architecture replaces that complete
+> filesystem subsystem with Ephemeral AI FS while keeping Durable Objects,
+> Durable Object SQLite, `computerd`, FUSE, and the execution runtimes. See
+> [the replacement architecture](docs/20_ephemeral_ai_fs.md).
+
 Cloudflare Computer is a virtual filesystem that lives inside a
 Durable Object. The Durable Object holds the authoritative state in
 SQLite and exposes one pluggable execution surface through
@@ -82,8 +89,9 @@ The repo is a small monorepo. Each package has its own README with
 package-specific status and usage notes.
 
 - [`packages/dofs`](packages/dofs/README.md) (`@cloudflare/dofs`) —
-  Durable Object SQLite-backed virtual filesystem, sync protocol
-  building blocks, and a `@platformatic/vfs` provider for Node.
+  current Durable Object SQLite-backed filesystem, sync building blocks, and
+  Node virtual filesystem provider. Ephemeral AI FS replaces this filesystem
+  path in the fork's target architecture.
 - [`packages/rpc`](packages/rpc/README.md)
   (`@cloudflare/computer-rpc`) — capnweb wire types and
   server/client helpers shared between the Durable Object and `computerd`.

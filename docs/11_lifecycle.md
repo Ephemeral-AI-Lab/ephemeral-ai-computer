@@ -8,6 +8,11 @@
 > on the DO side, not `ctx.acceptWebSocket()`, so the DO is not
 > hibernating yet. The rest of this document describes shipped
 > behaviour; the durability gaps it surfaces are deferred work.
+>
+> The Ephemeral AI Computer target keeps this Durable Object and container
+> lifecycle but replaces the DOFS filesystem on both sides with Ephemeral AI
+> FS. Durable Object SQLite remains authoritative. See
+> [20. Ephemeral AI FS replacement](./20_ephemeral_ai_fs.md).
 
 ## Architecture
 
