@@ -178,7 +178,7 @@ export async function mountShim(options: MountShimOptions): Promise<ShimMount> {
       console.error("[shim] disk reconcile failed:", error);
     });
   }, pollIntervalMs);
-  pollTimer.unref?.();
+  (pollTimer as unknown as { unref?: () => void }).unref?.();
 
   return {
     async unmount(): Promise<void> {

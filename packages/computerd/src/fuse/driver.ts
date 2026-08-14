@@ -506,7 +506,7 @@ export function makeFUSEOps(vfs: NodeVirtualFileSystem, mountPoint = "/"): FuseO
       this.getattr(path, cb);
     },
 
-    open(path, _flags, cb) {
+    open(path, flags, cb) {
       try {
         const entry = files.get(path);
         if (entry?.pendingCreate === true) {
@@ -518,7 +518,12 @@ export function makeFUSEOps(vfs: NodeVirtualFileSystem, mountPoint = "/"): FuseO
           cb(ERRNO.EISDIR, 0);
           return;
         }
-        if (hasBufferedWrites) {
+        // FUSE also calls open() for read-only handles on execution replicas.
+        // Preparing a write buffer here would perform a mutation before the
+        // first read and correctly surface EROFS as EIO at the kernel edge.
+        // O_ACCMODE is the low two bits on Linux and macOS.
+        const writable = (flags & 0b11) !== 0;
+        if (writable && hasBufferedWrites) {
           directWriteVfs.openWriteBufferSync?.(toVfs(path));
         }
         cb(0, openFileHandle(path));
@@ -960,6 +965,8 @@ export async function mountFuse(options: {
   backend?: FUSEBackend;
   mountPoint: string;
   vfs: NodeVirtualFileSystem;
+  /** Backing VFS root; defaults to the historical standalone prefix. */
+  vfsRoot?: string;
 }): Promise<FuseMount> {
   // biome-ignore lint/suspicious/noExplicitAny: fuse-native ships no types
   const fuseModule: any = await import("fuse-native");
@@ -971,7 +978,7 @@ export async function mountFuse(options: {
   // is handed to fuse-native directly.
   const traceMode = process.env.COMPUTERD_FUSE_TRACE;
   const tracer: FuseTracer | undefined = traceMode === "summary" ? createFuseTracer() : undefined;
-  const baseOps = makeFUSEOps(options.vfs, options.mountPoint);
+  const baseOps = makeFUSEOps(options.vfs, options.vfsRoot ?? options.mountPoint);
   const { getBufferStats: _getBufferStats, ...fuseOps } = baseOps;
   const ops =
     tracer === undefined

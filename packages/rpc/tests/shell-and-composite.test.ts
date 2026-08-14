@@ -13,7 +13,7 @@
 //     plain instance properties — see comment on WorkspaceRPCServer
 //     in server.ts). Pin both the routing and the getter contract.
 //
-// Both halves go through a real WebSocket against acceptWebSocketSession.
+// All surfaces go through a real WebSocket against acceptWebSocketSession.
 
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -244,14 +244,14 @@ async function startCompositeHarness(): Promise<CompositeHarness> {
   };
 }
 
-describe("Composite WorkspaceRPC (sync + shell on one session)", () => {
+describe("Composite WorkspaceRPC (session + sync + shell on one socket)", () => {
   let harness: CompositeHarness | undefined;
   afterEach(async () => {
     await harness?.close();
     harness = undefined;
   });
 
-  it("client.sync.watermarks and client.shell.exec both work over one socket", async () => {
+  it("client.session.ping, client.sync.watermarks, and client.shell.exec share one socket", async () => {
     // The whole point of the composite stub. If the WorkspaceRPCServer
     // getter trick regresses (capnweb starting to traverse plain
     // instance properties again, or the getter shape changing), one
@@ -260,6 +260,10 @@ describe("Composite WorkspaceRPC (sync + shell on one session)", () => {
     harness = await startCompositeHarness();
     const client = createWorkspaceClient({ url: harness.url });
     try {
+      const beforePing = await client.sync.watermarks();
+      await expect(client.session.ping()).resolves.toBeUndefined();
+      expect(await client.sync.watermarks()).toEqual(beforePing);
+
       const wm = await client.sync.watermarks();
       // The watermarks shape is the diagnostic surface; we only
       // care that it round-trips and that the call lands.

@@ -4,7 +4,15 @@ import { mkdir } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { isAbsolute } from "node:path";
-import type { ExecEvent as RpcExecEvent } from "@cloudflare/computer-rpc";
+import {
+  COMPUTER_EFS_CARRIER_V1_RESOURCES,
+  computerEfsCarrierV1Stats,
+  acceptComputerEfsCarrierSession,
+  openAuthenticatedComputerEfsCarrier,
+  openComputerEfsCarrierClient,
+  type ExecEvent as RpcExecEvent,
+} from "@cloudflare/computer-rpc";
+import type { AuthorizedReplicationPeer } from "@ephemeralai/fs-replication";
 import { createWorkspaceClient, type WorkspaceClient } from "@cloudflare/computer-rpc/client";
 import { isStubTrackingEnabled, stubSnapshot } from "@cloudflare/computer-rpc/debug";
 import type { RunnerLike } from "@cloudflare/computer-rpc/server";
@@ -125,6 +133,13 @@ interface ComputerdInfo {
   port: number;
 }
 
+function parseEfsAuthorization(value: string | undefined): AuthorizedReplicationPeer | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const parsed: unknown = JSON.parse(value);
+  if (!parsed || typeof parsed !== "object") throw new Error("EFS_AUTHORIZATION_JSON must be an object");
+  return parsed as AuthorizedReplicationPeer;
+}
+
 // Snapshot DOFS table sizes and process memory so an external caller
 // can watch growth without attaching a debugger. Used by the
 // /__computerd/stats endpoint while diagnosing the npm install OOM.
@@ -155,6 +170,9 @@ function collectDbStats(db: Database): Record<string, unknown> {
   out.heap_total = mem.heapTotal;
   out.external = mem.external;
   out.array_buffers = mem.arrayBuffers;
+  const carrier = computerEfsCarrierV1Stats();
+  out.carrier_reserved_bytes = carrier.reservedBytes;
+  out.carrier_queued = carrier.queued;
   return out;
 }
 
@@ -168,6 +186,12 @@ function createHTTPServer(
   info: ComputerdInfo,
   rpc: ReturnType<typeof createWorkspaceServer>,
   getStats?: () => Record<string, unknown>,
+  efs?: {
+    readonly token: string;
+    readonly authorization: AuthorizedReplicationPeer;
+    readonly openEndpoint: () => Promise<import("@ephemeralai/fs-replication").ReplicationEndpoint>;
+    readonly runReturn?: (body: EfsReturnBody) => Promise<import("@ephemeralai/fs-replication").ReplicationRunResult>;
+  },
 ): HTTPHandle {
   // Holds the current outbound capnweb session opened via /connect.
   // Re-POSTing /connect (e.g. after a DO hibernate + new incarnation)
@@ -197,6 +221,37 @@ function createHTTPServer(
           });
         }
       });
+      return;
+    }
+
+    // The authority still initiates provisioning, main, and branch delivery.
+    // This one explicit operation is the only computerd-originated flow: the
+    // selected execution branch returns to the authority over the real EFS
+    // carrier, while the FS package owns all protocol and durable state.
+    if (path === "/efs/return") {
+      if (request.method !== "POST") {
+        send(response, 405, "method not allowed\n", { allow: "POST" });
+        return;
+      }
+      const credential = request.headers["x-efs-auth"];
+      const runReturn = efs?.runReturn;
+      if (!efs || runReturn === undefined || typeof credential !== "string" || credential !== efs.token) {
+        send(response, 401, "replication authentication failed\n");
+        return;
+      }
+      void (async () => {
+        try {
+          const body = await readJson<EfsReturnBody>(request);
+          const result = await runReturn(body);
+          send(response, 200, `${JSON.stringify(result)}\n`, {
+            "content-type": "application/json; charset=utf-8",
+          });
+        } catch (error) {
+          send(response, 502, `${JSON.stringify({ error: (error as Error).message })}\n`, {
+            "content-type": "application/json; charset=utf-8",
+          });
+        }
+      })();
       return;
     }
 
@@ -278,32 +333,50 @@ function createHTTPServer(
   });
 
   // /ws — capnweb WebSocket endpoint. Long-lived, bidirectional,
-  // streaming-friendly. The container's primary sync carrier.
-  // perMessageDeflate compresses each WS frame with zlib. Defaults
-  // off in the `ws` package; we turn it on so computerd-to-computerd peers
-  // (and any Node-side client that negotiates the extension) save
-  // bytes on the wire. Clients that don't advertise the extension
-  // negotiate down to plain frames, so no flag day for workerd or
-  // browser callers.
-  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: true });
+  // streaming-friendly. Preserve its existing shell/sync carrier profile;
+  // replication uses the separate /efs endpoint below.
+  const wss = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: true,
+  });
+  const efsWss = new WebSocketServer({
+    noServer: true,
+    maxPayload: COMPUTER_EFS_CARRIER_V1_RESOURCES.maxRawFrameBytes,
+    perMessageDeflate: false,
+  });
   wss.on("connection", (ws) => {
     acceptWebSocketSession(ws, rpc);
   });
+  efsWss.on("connection", (ws, request) => {
+    if (!efs) {
+      ws.close(1008, "replication is not configured");
+      return;
+    }
+    void openAuthenticatedComputerEfsCarrier({
+      credential: typeof request.headers["x-efs-auth"] === "string" ? request.headers["x-efs-auth"] : "",
+      authenticate: async (credential) => {
+        if (credential !== efs.token) throw new Error("EAUTH: replication carrier authentication failed");
+        return efs.authorization;
+      },
+      openEndpoint: efs.openEndpoint,
+    }).then((admitted) => acceptComputerEfsCarrierSession(ws, admitted)).catch(() => ws.close(1008, "replication authentication failed"));
+  });
   server.on("upgrade", (request, socket, head) => {
-    if (requestPath(request) !== "/ws") {
+    const path = requestPath(request);
+    if (path !== "/ws" && path !== "/efs") {
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
       socket.destroy();
       return;
     }
-    wss.handleUpgrade(request, socket as Socket, head, (ws) => {
-      wss.emit("connection", ws, request);
-    });
+    const target = path === "/efs" ? efsWss : wss;
+    target.handleUpgrade(request, socket as Socket, head, (ws) => target.emit("connection", ws, request));
   });
 
   return {
     server,
     close: async () => {
       await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await new Promise<void>((resolve) => efsWss.close(() => resolve()));
       await closeServer(server);
     },
   };
@@ -330,6 +403,15 @@ interface ConnectBody {
   // Defaults to 30s; the egress proxy is up at boot but the worker
   // that hosts it may take a tick.
   healthTimeoutMs?: unknown;
+}
+
+interface EfsReturnBody {
+  readonly authorityUrl: string;
+  readonly authorityCredential: string;
+  readonly authorization: AuthorizedReplicationPeer;
+  readonly operationId: string;
+  readonly branchId: string;
+  readonly resumeKey?: string;
 }
 
 async function handleConnect(
@@ -465,6 +547,14 @@ async function main(): Promise<void> {
   console.log(`[info] FUSE_MOUNT=${fuseMountMode} resolved to backend=${backend.kind}`);
 
   const upstreamUrl = process.env.UPSTREAM_URL?.trim();
+  const efsDatabasePath = process.env.EFS_DATABASE_PATH?.trim();
+  const efsBranchId = process.env.EFS_BRANCH_ID?.trim();
+  const efsAuthorityId = process.env.EFS_AUTHORITY_ID?.trim();
+  const efsRole = process.env.EFS_ROLE === "main-authority" ? "main-authority" : "replica";
+  const efsToken = process.env.EFS_AUTH_TOKEN;
+  const efsAuthorization = parseEfsAuthorization(process.env.EFS_AUTHORIZATION_JSON);
+  if (efsDatabasePath !== undefined && ((efsToken === undefined) !== (efsAuthorization === undefined)))
+    throw new Error("EFS_AUTH_TOKEN and EFS_AUTHORIZATION_JSON must be configured together");
   let upstreamClient: WorkspaceClient | undefined;
   if (upstreamUrl !== undefined && upstreamUrl.length > 0) {
     // Use the `ws` package's WebSocket (not Node's built-in
@@ -476,10 +566,22 @@ async function main(): Promise<void> {
       WebSocketImpl: WebSocket as unknown as typeof globalThis.WebSocket,
     });
   }
-  const { vfs, db, stopSync } = await createNodeVirtualFileSystem({
-    upstream: upstreamClient?.sync,
+  const localVfs = await createNodeVirtualFileSystem({
+    ...(efsDatabasePath === undefined ? { upstream: upstreamClient?.sync } : {}),
+    ...(efsDatabasePath === undefined ? {} : {
+      databasePath: efsDatabasePath,
+      provisioningState: efsRole === "main-authority" ? "bound" : "unbound-replica",
+      ...(efsBranchId === undefined ? {} : { branchId: efsBranchId }),
+      ...(efsAuthorityId === undefined ? {} : {
+        replicationIdentity: { authorityId: efsAuthorityId, role: efsRole },
+      }),
+    }),
   });
-  const info: ComputerdInfo = { backend, mountPoint, port };
+  const { vfs, db, stopSync } = localVfs;
+  const mountBackend: FUSEBackend = vfs === undefined ? { kind: "none" } : backend;
+  if (vfs === undefined)
+    console.log("[info] EFS replica is unbound; replication carrier is available and FUSE will start after reprovision/restart");
+  const info: ComputerdInfo = { backend: mountBackend, mountPoint, port };
 
   let fuse: FuseMount | undefined;
   // When running on the userspace shim, capture the typed handle
@@ -487,22 +589,25 @@ async function main(): Promise<void> {
   // afterApply / beforeFetch hooks below. A real FUSE mount serves
   // reads straight from the VFS, so it doesn't need either settle.
   let shim: ShimMount | undefined;
-  if (backend.kind !== "none") {
-    // The VFS stores everything under `mountPoint` so capnweb pulls,
-    // shim materialisation, and shell `exec` agree on absolute
-    // paths. Pre-create the mount directory in the VFS so FUSE's
-    // first getattr on "/" can stat the mount root.
-    vfs.mkdirSync(mountPoint, { recursive: true });
+  if (mountBackend.kind !== "none" && vfs !== undefined) {
+    // Standalone DOFS keeps its historical absolute mountPoint prefix. The
+    // durable EFS runtime already owns a filesystem-root namespace, so its
+    // FUSE view must map the kernel mount root to `/` directly. This is also
+    // required for execution replicas: main is intentionally read-only and
+    // cannot manufacture a writable mountPoint directory in its namespace.
+    const vfsRoot = efsDatabasePath === undefined ? mountPoint : "/";
+    if (vfsRoot !== "/") vfs.mkdirSync(vfsRoot, { recursive: true });
     await mkdir(mountPoint, { recursive: true });
 
-    if (backend.kind === "shim") {
+    if (mountBackend.kind === "shim") {
       shim = await mountShim({ vfs, mountPoint });
       fuse = shim;
     } else {
       fuse = await mountFuse({
-        backend,
+        backend: mountBackend,
         mountPoint,
         vfs,
+        vfsRoot,
       });
     }
   }
@@ -563,7 +668,42 @@ async function main(): Promise<void> {
   const http = createHTTPServer(info, rpc, () => ({
     ...collectDbStats(db),
     ...(fuse?.getBufferStats?.() ?? {}),
-  }));
+  }),
+  efsToken !== undefined && efsAuthorization !== undefined && localVfs.openReplicationEndpoint !== undefined
+    ? {
+        token: efsToken,
+        authorization: efsAuthorization,
+        openEndpoint: () => localVfs.openReplicationEndpoint!(efsAuthorization),
+        ...(efsRole === "replica" && efsBranchId !== undefined && localVfs.runReplicaBranchReturn !== undefined
+          ? {
+              runReturn: async (body: EfsReturnBody) => {
+                if (body.branchId !== efsBranchId) throw new Error("BranchMismatch: selected branch is not active");
+                if (body.authorityUrl.length === 0 || body.authorityCredential.length === 0)
+                  throw new Error("InvalidRequest: authority URL and credential are required");
+                if (body.operationId.length === 0) throw new Error("InvalidRequest: operationId is required");
+                const carrier = await openComputerEfsCarrierClient({
+                  url: `${toWebSocketUrl(body.authorityUrl).replace(/\/$/, "")}/efs`,
+                  credential: body.authorityCredential,
+                  WebSocketImpl: WebSocket as unknown as import("@cloudflare/computer-rpc").ComputerEfsWebSocketConstructor,
+                });
+                try {
+                  return await localVfs.runReplicaBranchReturn!({
+                    transport: carrier.target,
+                    authorization: body.authorization,
+                    operationId: body.operationId,
+                    branchId: body.branchId,
+                    ...(body.resumeKey === undefined
+                      ? {}
+                      : { resumeKey: Uint8Array.from(Buffer.from(body.resumeKey, "base64")) }),
+                  });
+                } finally {
+                  await carrier.close();
+                }
+              },
+            }
+          : {}),
+      }
+    : undefined);
 
   let shuttingDown = false;
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
@@ -592,6 +732,7 @@ async function main(): Promise<void> {
         console.error(error);
       }
     }
+    await localVfs.close?.();
     teardownLogging();
     process.exit(signal === "SIGINT" ? 130 : 143);
   };

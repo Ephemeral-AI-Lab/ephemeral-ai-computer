@@ -59,7 +59,7 @@ Ephemeral AI FS <--- versioned sync ----> Ephemeral AI FS
           |                                         |
 Cloudflare SQLite adapter                   Node.js SQLite adapter
           |                                         |
-Durable Object SQLite                       local SQLite mirror
+Durable Object SQLite                       persistent local SQLite replica
 ```
 
 One selected filesystem implementation runs on both sides of a workspace.
@@ -67,6 +67,13 @@ Ephemeral AI FS is the default. DOFS remains available through an explicit
 comparison selection. The two Ephemeral AI FS database adapters connect the
 same portable engine to different SQLite runtimes; they do not implement
 alternate filesystem behavior.
+
+The execution-side Ephemeral AI FS is one shared runtime. Replication and the
+branch-scoped Node virtual filesystem derive from that runtime and therefore
+share one cache, mutation coordinator, and aggregate memory budget. A fresh
+replica adopts the authoritative filesystem and genesis identity through an
+authenticated empty-only provisioning operation; opening an independently
+initialized filesystem and attempting to synchronize it is not supported.
 
 ```text
 ephemeral-ai-fs   default production and branch-capable engine
@@ -78,18 +85,18 @@ workspace is open or fall back after an error.
 
 ## Ownership
 
-| Layer | Owner |
-| --- | --- |
-| Filesystem API, namespace, and metadata | Ephemeral AI FS |
-| `workspace.fs` and branch composition | Ephemeral AI Computer |
-| Durable Object identity and request routing | Ephemeral AI Computer |
-| Authentication and sync RPC transport | Ephemeral AI Computer |
-| Replication protocol and durable state | Ephemeral AI FS |
-| `computerd`, FUSE, mounts, and process execution | Ephemeral AI Computer |
-| Content, branches, publication, recovery, and collection | Ephemeral AI FS |
-| Cloudflare and Node.js SQLite database adapters | Ephemeral AI FS |
-| DOFS comparison adapter and benchmark selection | Ephemeral AI Computer |
-| Durable Object SQLite service | Cloudflare runtime |
+| Layer                                                      | Owner                 |
+| ---------------------------------------------------------- | --------------------- |
+| Filesystem API, namespace, and metadata                    | Ephemeral AI FS       |
+| `workspace.fs` and branch composition                      | Ephemeral AI Computer |
+| Durable Object identity and request routing                | Ephemeral AI Computer |
+| Authentication, scheduling, and bounded sync RPC transport | Ephemeral AI Computer |
+| Replication protocol and durable state                     | Ephemeral AI FS       |
+| `computerd`, FUSE, mounts, and process execution           | Ephemeral AI Computer |
+| Content, branches, publication, recovery, and collection   | Ephemeral AI FS       |
+| Cloudflare and Node.js SQLite database adapters            | Ephemeral AI FS       |
+| DOFS comparison adapter and benchmark selection            | Ephemeral AI Computer |
+| Durable Object SQLite service                              | Cloudflare runtime    |
 
 Computer-owned integration code may transport calls across Workers remote
 procedure calls and translate Node-style or FUSE operations. It must not
@@ -124,6 +131,12 @@ The branch handle selects the Ephemeral AI FS view used by the execution
 backend. Reconnect must restore the same branch identity rather than opening
 main or another agent's branch.
 
+Execution-replica main is read-only. A writable FUSE mount selects exactly one
+active private branch. A missing, terminal, or mismatched branch fails without
+falling back to main. After the branch returns to the authority, publication is
+guarded by the exact imported generation and generation digest so a later
+mutation cannot be published accidentally.
+
 ## Migration and cutover
 
 The legacy representation may coexist with Ephemeral AI FS during migration
@@ -152,8 +165,13 @@ The replacement is complete only when:
   replacement path;
 - publication, restart, reconnect, migration, rollback, and garbage collection
   tests pass;
-- the full push, execute, pull, publish, and verify path preserves content and
+- authenticated empty-replica provisioning and unsupported identity, engine,
+  schema, and protocol rejection happen before writes;
+- the full bounded Cap'n Web, push, exact-branch FUSE mount, execute, pull,
+  generation-guarded publish, replay, and verify path preserves content and
   namespace metadata;
+- replication and Node VFS use one execution runtime and remain inside one
+  configured process-memory budget under pinned reads and dirty writes;
 - unsupported protocol pairs fail before changing either side; and
 - omitted engine configuration selects Ephemeral AI FS;
 - explicit DOFS selection runs the common comparison workload; and
