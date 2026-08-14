@@ -17,7 +17,7 @@
     "build:bin": "node ./scripts/build-bin.mjs",
     "build:docker": "node ./scripts/build-docker.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "node ../../script/run-vitest-wsl.mjs",
     "publish:docker": "node ./scripts/build-docker.mjs --push"
   },
   "engines": {
