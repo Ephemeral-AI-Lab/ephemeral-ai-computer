@@ -1,10 +1,10 @@
 # EphemeralAI Computer product requirements
 
-| Field | Value |
-| --- | --- |
-| Status | Draft |
-| Owner | Ephemeral AI Lab |
-| Last updated | 2026-08-10 |
+| Field        | Value            |
+| ------------ | ---------------- |
+| Status       | Draft            |
+| Owner        | Ephemeral AI Lab |
+| Last updated | 2026-08-10       |
 
 ## Summary
 
@@ -248,21 +248,44 @@ The bridge must cover the authoritative Durable Object side and the local
 `computerd` mirror side. `workspace.fs` exposes the EphemeralAI FS contract;
 the bridge supplies Workers remote procedure call transport, sync, and the
 Node-compatible provider required by FUSE without implementing another
-filesystem. Both sides must interpret content identities, manifests, path
-changes, and revision boundaries consistently.
+filesystem. On the execution side, one Ephemeral AI FS runtime must own the
+persistent Node SQLite replica and derive both replication and the branch-bound
+Node virtual filesystem from one cache, mutation coordinator, and memory
+budget. Both sides must interpret content identities, manifests, path changes,
+and revision boundaries consistently.
 
 ### EC-4: Protocol capability negotiation
 
 The Ephemeral AI FS replication package owns a synchronization handshake that
-identifies protocol version, chunking mode, manifest encoding, page size, and
-branch support. Computer authenticates the peer and carries bounded requests
-through its existing RPC path; it must not interpret or negotiate filesystem
-format fields. The replication endpoint must reject an unsupported combination
-with a clear error before applying changes.
+identifies protocol version, logical filesystem schema, storage user version,
+chunking mode, manifest encoding, page size, branch support, and Computer host
+profile. Computer must authenticate the peer and bind workspace, filesystem,
+role, global flow, branch, host profile, policy version, and limits before
+creating or forwarding a replication exchange. It carries bounded requests but
+must not interpret or negotiate filesystem format fields. The replication
+endpoint must reject an unsupported combination with a stable protocol error
+before applying changes.
+
+The `computer-efs-carrier-v1` profile uses an uncompressed replication
+WebSocket, a 4 MiB plus 64 KiB raw frame limit enforced before Cap'n Web, a 3
+MiB decoded request or response, a 64 KiB mutating acknowledgement, 2 MiB of
+carrier scratch, and one exchange per operation. Its memory budget includes
+base64 expansion, JSON text, decoded bytes, and transient transport copies.
+All operations in a process share one 20 MiB carrier admission pool; at most one
+17.25 MiB maximum exchange runs at a time. Semantic replication errors travel
+in canonical result envelopes rather than depend on how a JavaScript error
+object crosses the carrier.
 
 A new peer must never interpret EphemeralAI FS data as a legacy fixed-chunk
 payload. Version negotiation must be covered by supported, unsupported, and
 downgrade tests.
+
+The initial cutover accepts only the Ephemeral AI FS `efs-replication-v1`
+compatibility row and `computer-efs-carrier-v1` host profile. It does not infer
+compatibility from package versions or a date. Future rows require a normative
+filesystem spec amendment, golden vectors, and an explicit Computer carrier
+update. The shipped Cap'n Web interface documentation must be revised with this
+exact profile when the cutover is implemented.
 
 ### EC-5: Private execution branches
 
@@ -274,6 +297,12 @@ publication.
 Every mount and sync session must carry an unambiguous workspace and branch
 identity. Reconnect must rejoin the same branch or fail rather than opening
 main accidentally.
+
+The local replica's main view is read-only. Execution mutations must use one
+active private branch, and the FUSE provider must mount exactly that branch.
+A missing, terminal, or mismatched branch must fail without writable-main
+fallback. Private branch mutations remain invisible to main and sibling
+branches until publication.
 
 ### EC-6: Branch API
 
@@ -304,6 +333,12 @@ compare branch base versions with current main, reject conflicting paths, reuse
 existing objects, create one durable revision, record the idempotent result,
 and update main references in one transaction.
 
+Returning an execution branch to the authority must produce its exact activated
+generation and generation digest. Publication must compare both values in its
+transaction. An intervening branch mutation must fail the guarded publication
+rather than publish a later generation. Replaying the operation identifier after
+a lost response must return the original result without another revision.
+
 The API must return changed paths for success and conflicting paths for
 conflict. A conflict must leave main unchanged and keep the branch available
 for inspection or retry under a new operation.
@@ -314,9 +349,41 @@ Push and pull must move EphemeralAI FS manifests, missing content objects,
 namespace changes, and branch identity without materializing unchanged full
 files. The protocol should batch object-existence checks and object transfer.
 
-An empty sync must remain cheap. A reconnect must resume from durable
-watermarks or request a safe reconciliation. Partial application must not
-advance the visible revision.
+Each replication operation has one explicit global role flow and, for branch
+flows, one branch identity. The source named by that flow initiates it through
+the bidirectional Computer session. Before execution, the authority sends main
+and the active branch to the replica. After execution, the replica returns only
+that active branch generation to the authority. Replica main cannot originate
+changes, and an execution replica cannot originate terminal branch state or
+publication results.
+
+A genuinely empty local database must be provisioned from an authenticated
+authority descriptor that atomically adopts the exact filesystem and genesis
+identity. An unrelated nonempty database, wrong workspace, wrong engine, or
+conflicting authority must fail without writes. The exact Ephemeral AI FS
+durable unbound marker, schema, session, receipt, lease, and verified staging
+state must reopen and resume after every accepted provisioning batch. The local
+database is persistent across
+`computerd` and FUSE restart when the same database file survives. Container or
+database replacement begins with the authenticated empty-replica flow rather
+than silently creating a different filesystem.
+
+External Computer mounts are not independent replication peers. Their mount
+context must carry the selected workspace and branch, and read-only policy is
+enforced locally before mutation. Private branch execution must not write
+through to an external mount before explicit publication policy permits it;
+discarding a branch has no external side effect.
+
+An empty sync must remain cheap. A reconnect must resume the selected durable
+operation by an opaque resume key. Ephemeral AI FS owns retry attempts, elapsed
+budget, cursors, receipts, and terminal results; Computer schedules a returned
+not-before wake-up and does not reconstruct protocol state. Partial application
+must not advance the visible revision.
+
+Replication copies the exact branch namespace. Execution scratch such as
+`node_modules` must either be ordinary branch content or use a separately
+mounted scratch filesystem with explicit quota and lifecycle. Computer must not
+insert a path-ignore filter into Ephemeral AI FS replication.
 
 ### EC-9: Migration and benchmark isolation
 
@@ -345,7 +412,7 @@ observable.
 ### EC-11: Observability
 
 Structured diagnostics must include workspace, branch, engine, protocol
-version, sync direction, revision or watermark, object counts, and byte counts.
+version, global replication flow, revision or watermark, object counts, and byte counts.
 Logs must not include file content by default.
 
 Metrics must distinguish logical changed bytes, transferred bytes, retained
@@ -366,9 +433,14 @@ automatic engine change.
 ## Security and integrity requirements
 
 - Keep Durable Object identity as the authority for workspace routing.
-- Validate workspace and branch identity at every sync session boundary.
+- Authenticate before replication exchange and bind peer, workspace,
+  filesystem, role, global flow, branch, host profile, policy version, and limits to the
+  durable operation.
+- Validate workspace and branch identity at every sync session boundary and
+  durable resume.
 - Verify manifest and content-object integrity before advancing a revision.
-- Bound incoming object sizes, batches, and queued changes.
+- Bound raw and decompressed carrier frames before JSON/base64 decode, then
+  bound decoded envelopes, object sizes, batches, and queued changes.
 - Do not log file bytes, secrets, or remote procedure call credentials.
 - Treat container-side SQLite as a mirror, not an independent authority.
 - Reject protocol mismatches before mutating either side.
@@ -400,8 +472,18 @@ The acceptance suite must include:
 - same-path branch contention;
 - cold and warm push and pull;
 - empty synchronization;
+- fresh-replica provisioning and restart;
+- exact branch remount, return, and generation-guarded publication;
+- Cap'n Web frame-limit and base64-expansion cases;
+- incoming activation with pinned readers and dirty writers;
 - garbage collection after publish and discard;
 - container and Durable Object restart.
+
+Computer compatibility reports must include raw carrier bytes, decoded envelope
+bytes, base64 expansion, transport and Ephemeral AI FS high-water memory,
+process resident memory, SQLite and write-ahead log growth, and live remote
+procedure call stubs after disconnect. Transport and filesystem allocations
+must fit the one configured process budget.
 
 EphemeralAI FS may use more processor time for first writes. Release decisions
 must weigh that cost against retained storage, synchronization, and
@@ -434,15 +516,20 @@ multi-agent behavior rather than claiming improvement from one metric.
 
 ### Milestone 3: Versioned sync
 
-- Connect authenticated Computer transport to the Ephemeral AI FS replication
-  endpoint and driver.
-- Add mixed-version rejection, reconnect, batching, and integrity tests.
+- Add peer authentication and a bounded Cap'n Web carrier profile before
+  connecting it to the Ephemeral AI FS endpoint.
+- Add persistent empty-replica provisioning, one shared execution runtime,
+  durable operation resume scheduling, and stable semantic error envelopes.
+- Add mixed-version, wrong-workspace, wrong-engine, frame-limit, reconnect,
+  batching, live-activation, and integrity tests.
 - Measure cold, warm, and empty sync behavior.
 
 ### Milestone 4: Agent branches
 
 - Add branch lifecycle and execution binding.
-- Add transactional, idempotent publication and explicit conflicts.
+- Mount the exact active branch with read-only replica main and no fallback.
+- Add generation-guarded, transactional, idempotent publication and explicit
+  conflicts.
 - Add examples for independent and conflicting agent work.
 
 ### Milestone 5: Migration and preview
@@ -463,14 +550,28 @@ multi-agent behavior rather than claiming improvement from one metric.
 - EphemeralAI FS passes filesystem conformance on both authoritative and local
   mirror databases.
 - Unsupported protocol pairs fail before applying data.
+- An authenticated empty local replica adopts the authority's exact genesis;
+  recognized durable unbound state resumes, while unrelated nonempty,
+  wrong-workspace, and wrong-engine targets fail without writes.
 - Two independent branch paths publish successfully in either order.
 - Two stale writers to the same path produce one success and one explicit
   conflict with no silent loss.
 - Repeating a publication operation after restart returns the same result.
 - A container reconnects to its intended branch without exposing another
   branch's private files.
+- Replica main stays read-only, and missing or terminal branches never fall
+  back to main.
+- A returned branch generation publishes only with its matching generation and
+  digest, a lost response replays without another activation or revision, and
+  authority terminal state returns before the replica can reconnect.
 - The full push, `computerd`, FUSE, shell, pull, publish, and verify path passes
-  through EphemeralAI FS.
+  through the actual bounded Cap'n Web carrier, one shared Ephemeral AI FS
+  runtime, and real FUSE.
+- Carrier, filesystem, SQLite, and FUSE memory remain within one process budget,
+  and disconnect cleanup leaves no live replication sessions, reservations, or
+  remote procedure call stubs.
+- Deleting the local replica and provisioning a replacement from empty restores
+  the exact main and active branch without a duplicate authority activation.
 - Migration and rollback tests preserve file content and namespace metadata.
 - Omitted engine configuration selects EphemeralAI FS, while explicit `dofs`
   selection runs the same common filesystem benchmark surface.
@@ -492,15 +593,14 @@ multi-agent behavior rather than claiming improvement from one metric.
 
 ## Open decisions
 
-- Should branch identity be part of every existing sync call or represented by
-  a branch-scoped session capability?
 - Which engine-neutral fixture format should seed both isolated benchmark
   databases?
 - How often should the DOFS comparison baseline follow upstream changes?
 - Should Computer use the EphemeralAI FS 30-day branch retention default or
   configure a longer product-level window?
 - How should a caller reopen a conflicted branch for manual resolution?
-- Which compatibility window should protocol negotiation support?
+- Which execution paths require a separate nondurable scratch mount instead of
+  replicated branch content?
 
 ## Licensing and attribution
 

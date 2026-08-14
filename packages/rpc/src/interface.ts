@@ -12,10 +12,9 @@
 //   hasObjects     — either probes the other. Returns the subset
 //                    the receiver already holds.
 //
-// The exec / getExec / killExec / disposeExec surface hangs off a
-// sibling ShellRPC interface. Both compose under the top-level
-// WorkspaceRPC, so the wire stub exposes one stable surface while
-// the two halves stay internally separable.
+// Liveness and exec surfaces hang off sibling SessionRPC and ShellRPC
+// interfaces. All three compose under the top-level WorkspaceRPC, so
+// the wire stub stays stable while the surfaces remain separable.
 
 import type { ChangeCursor, ChangeEntry } from "@cloudflare/dofs";
 
@@ -136,10 +135,17 @@ export interface ShellRPC {
   disposeExec(input: { id: string }): Promise<void>;
 }
 
-// Composite stub. The wire serves one of these per session; the
-// two halves are independently testable. Host-side callers reach
-// each via `.sync` / `.shell`.
+// Computer-owned transport liveness. This stays outside filesystem
+// replication so heartbeats never create or advance durable protocol state.
+export interface SessionRPC {
+  ping(): Promise<void>;
+}
+
+// Composite stub. The wire serves one of these per session; its
+// surfaces are independently testable. Host-side callers reach
+// each via `.session` / `.sync` / `.shell`.
 export interface WorkspaceRPC {
+  session: SessionRPC;
   sync: SyncRPC;
   shell: ShellRPC;
 }

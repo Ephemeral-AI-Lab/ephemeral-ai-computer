@@ -95,7 +95,7 @@ export interface CloudflareContainerBackendOptions {
   // /connect POST to return, /ws upgrade to arrive. Default 30s.
   connectTimeoutMs?: number;
 
-  // Period for the application-level heartbeat — a watermarks()
+  // Period for the application-level heartbeat — a session.ping()
   // RPC on a timer. Two jobs: detect a silently-dead peer faster
   // than waiting for the next real RPC, and keep middlebox idle
   // timers warm. Default 20_000ms. Set 0 to disable.
@@ -243,7 +243,7 @@ export class CloudflareContainerBackend implements WorkspaceBackend {
     if (this.#options.heartbeatIntervalMs > 0) {
       stopHeartbeat = startHeartbeat({
         intervalMs: this.#options.heartbeatIntervalMs,
-        ping: () => (stub as unknown as WorkspaceRPC).sync.watermarks(),
+        ping: () => (stub as unknown as WorkspaceRPC).session.ping(),
         onFailure: () => {
           try {
             ws.close();

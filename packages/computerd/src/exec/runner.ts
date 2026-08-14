@@ -24,6 +24,8 @@ import { createLog, type EventLog, openLog } from "./log.js";
 import { clearExecState, initializeExecSchema } from "./schema.js";
 import { ExecError, type ExecEvent, type ExecOptions, type RunnerOptions } from "./types.js";
 
+type TimerHandle = ReturnType<typeof setTimeout>;
+
 interface ExecRecord {
   id: string;
   child: ChildProcess;
@@ -33,9 +35,9 @@ interface ExecRecord {
   exitedAt?: number;
   live: boolean;
   subscriber?: LiveSubscriber;
-  timeoutTimer?: NodeJS.Timeout;
-  killTimer?: NodeJS.Timeout;
-  heartbeatTimer?: NodeJS.Timeout;
+  timeoutTimer?: TimerHandle;
+  killTimer?: TimerHandle;
+  heartbeatTimer?: TimerHandle;
 }
 
 interface LiveSubscriber {
@@ -82,7 +84,7 @@ export class Runner {
     now: () => number;
   };
   private readonly records = new Map<string, ExecRecord>();
-  private sweepTimer: NodeJS.Timeout | undefined;
+  private sweepTimer: TimerHandle | undefined;
   private disposed = false;
 
   constructor(init: RunnerInit) {
@@ -193,7 +195,7 @@ export class Runner {
           });
           scheduleHeartbeat();
         }, this.opts.heartbeatIntervalMs);
-        record.heartbeatTimer.unref?.();
+        unrefTimer(record.heartbeatTimer);
       };
       scheduleHeartbeat();
     }
@@ -481,8 +483,13 @@ export class Runner {
       this.sweep();
       if (this.records.size > 0) this.scheduleSweep();
     }, this.opts.sweepIntervalMs);
-    this.sweepTimer.unref?.();
+    unrefTimer(this.sweepTimer);
   }
+}
+
+function unrefTimer(timer: TimerHandle | undefined): void {
+  if (timer === undefined) return;
+  (timer as unknown as { unref?: () => void }).unref?.();
 }
 
 // Quote a single argument for /bin/sh -c. Wraps in single quotes

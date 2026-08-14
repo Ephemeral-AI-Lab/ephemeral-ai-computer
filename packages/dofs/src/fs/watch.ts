@@ -77,7 +77,7 @@ export function createWatcher(
   };
 
   const handle = setInterval(() => void tick(), interval);
-  handle.unref?.();
+  (handle as unknown as { unref?: () => void }).unref?.();
 
   emitter.close = () => {
     if (closed) return;

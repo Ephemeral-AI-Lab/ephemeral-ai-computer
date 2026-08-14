@@ -31,10 +31,11 @@
     "build": "tsc -p tsconfig.build.json",
     "pretypecheck": "npm run build --workspace @cloudflare/dofs",
     "typecheck": "tsc -p tsconfig.build.json --noEmit",
-    "test": "vitest run"
+    "test": "node ../../script/run-vitest-wsl.mjs"
   },
   "dependencies": {
     "@cloudflare/dofs": "*",
+    "@ephemeralai/fs-replication": "file:../../ephemeral-ai-fs-m7-audit/packages/replication",
     "capnweb": "^0.8.0"
   },
   "devDependencies": {

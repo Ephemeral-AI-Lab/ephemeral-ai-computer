@@ -207,7 +207,7 @@ export class WorkerShellBackend implements WorkspaceBackend {
       },
     };
 
-    const rpc: WorkspaceRPC = { sync: noopSync(), shell };
+    const rpc: WorkspaceRPC = { session: { async ping() {} }, sync: noopSync(), shell };
 
     return {
       rpc,

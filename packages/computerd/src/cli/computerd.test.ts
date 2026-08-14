@@ -16,7 +16,7 @@ const cliPath = path.join(packageRoot, "dist", "cli", "computerd.cjs");
 
 test("computerd rejects relative MOUNT_POINT values", async () => {
   const port = await getAvailablePort();
-  const child = spawn(cliPath, {
+  const child = spawnComputerdCli({
     cwd: packageRoot,
     env: { ...process.env, MOUNT_POINT: "relative-workspace", PORT: String(port) },
     stdio: ["ignore", "ignore", "pipe"],
@@ -32,7 +32,7 @@ test("computerd rejects non-numeric EXEC_LOG_MAX_BYTES values", async () => {
   // refuse to start. Previously Number('foo') -> NaN silently
   // disabled log eviction (every append exceeded the cap).
   const port = await getAvailablePort();
-  const child = spawn(cliPath, {
+  const child = spawnComputerdCli({
     cwd: packageRoot,
     env: {
       ...process.env,
@@ -133,6 +133,43 @@ test("/ws serves a capnweb WorkspaceRPC session", async (_ctx) => {
   }
 });
 
+test("/efs uses the uncompressed computer-efs raw frame ceiling", async () => {
+  const { COMPUTER_EFS_CARRIER_V1_RESOURCES } = await import("@cloudflare/computer-rpc");
+  const { WebSocket } = await import("ws");
+  const port = await getAvailablePort();
+  const mountPoint = await fs.mkdtemp(path.join(os.tmpdir(), "computerd-carrier-"));
+  const databasePath = path.join(mountPoint, "replica.db");
+  await startComputerd({
+    port,
+    mountPoint,
+    env: {
+      FUSE_MOUNT: "none",
+      EFS_DATABASE_PATH: databasePath,
+      EFS_AUTH_TOKEN: "carrier-test-token",
+      EFS_AUTHORIZATION_JSON: "{}",
+      EFS_ROLE: "replica",
+    },
+  });
+
+  const closeCode = async (bytes) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/efs`, {
+      perMessageDeflate: true,
+      headers: { "x-efs-auth": "carrier-test-token" },
+      maxPayload: COMPUTER_EFS_CARRIER_V1_RESOURCES.maxRawFrameBytes,
+    });
+    await new Promise((resolve, reject) => {
+      ws.once("open", resolve);
+      ws.once("error", reject);
+    });
+    expect(ws.extensions).toBe("");
+    ws.send("a".repeat(bytes));
+    return new Promise((resolve) => ws.once("close", resolve));
+  };
+
+  expect(await closeCode(COMPUTER_EFS_CARRIER_V1_RESOURCES.maxRawFrameBytes)).not.toBe(1009);
+  expect(await closeCode(COMPUTER_EFS_CARRIER_V1_RESOURCES.maxRawFrameBytes + 1)).toBe(1009);
+});
+
 test("/api serves a capnweb HTTP-batch WorkspaceRPC session", async (_ctx) => {
   const { newHttpBatchRpcSession } = await import("capnweb");
   const port = await getAvailablePort();
@@ -184,6 +221,8 @@ test("/__computerd/stats returns DOFS table sizes and process memory", async (_c
     expect(Number.isFinite(body[key]), key).toBe(true);
     expect(body[key], key).toBeGreaterThanOrEqual(0);
   }
+  expect(body.carrier_reserved_bytes).toBe(0);
+  expect(body.carrier_queued).toBe(0);
 });
 
 test("computerd exposes file IO through the userspace shim when FUSE_MOUNT=shim", async (_ctx) => {
@@ -241,7 +280,7 @@ test("FUSE_MOUNT=shim materialises an RPC push under the mount point", async (_c
 
 test("computerd rejects unknown FUSE_MOUNT values", async () => {
   const port = await getAvailablePort();
-  const child = spawn(cliPath, {
+  const child = spawnComputerdCli({
     cwd: packageRoot,
     env: {
       ...process.env,
@@ -263,7 +302,7 @@ test.each([
   ["WSD_FUSE_BACKEND", "linux"],
 ])("computerd refuses to boot when legacy %s is set", async (name, value) => {
   const port = await getAvailablePort();
-  const child = spawn(cliPath, {
+  const child = spawnComputerdCli({
     cwd: packageRoot,
     env: {
       ...process.env,
@@ -363,7 +402,7 @@ async function startComputerd({
   mountPoint: string;
   env?: Record<string, string>;
 }) {
-  const child = spawn(cliPath, {
+  const child = spawnComputerdCli({
     cwd: packageRoot,
     env: { ...process.env, MOUNT_POINT: mountPoint, PORT: String(port), ...env },
     stdio: ["ignore", "pipe", "pipe"],
@@ -387,6 +426,12 @@ async function startComputerd({
 
   await waitForHTTPOK(`http://127.0.0.1:${port}/health`, child, () => stderr || stdout);
   return child;
+}
+
+function spawnComputerdCli(options) {
+  return process.platform === "win32"
+    ? spawn(process.execPath, [cliPath], options)
+    : spawn(cliPath, options);
 }
 
 function getAvailablePort() {

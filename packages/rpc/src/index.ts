@@ -17,9 +17,18 @@
 
 export type {
   ExecEvent,
+  SessionRPC,
   ShellRPC,
   SyncRPC,
   WireError,
   WireErrorCode,
   WorkspaceRPC,
 } from "./interface.js";
+export {
+  acceptComputerEfsCarrierSession,
+  COMPUTER_EFS_CARRIER_V1_RESOURCES,
+  computerEfsCarrierV1Stats,
+  openAuthenticatedComputerEfsCarrier,
+  openComputerEfsCarrierClient,
+  type ComputerEfsWebSocketConstructor,
+} from "./replication-carrier.js";

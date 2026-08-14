@@ -24,7 +24,7 @@ import {
 import { newWebSocketRpcSession, nodeHttpBatchRpcResponse, RpcTarget } from "capnweb";
 
 import { trackStub, untrackStub } from "./debug.js";
-import type { ExecEvent, ShellRPC, SyncRPC, WorkspaceRPC } from "./interface.js";
+import type { ExecEvent, SessionRPC, ShellRPC, SyncRPC, WorkspaceRPC } from "./interface.js";
 
 // Subset of computerd's Runner that the shell server needs. Defining
 // the shape here (instead of importing the concrete class) keeps
@@ -276,11 +276,11 @@ class ShellRPCServer extends RpcTarget implements ShellRPC {
   }
 }
 
-// Composite server: exposes both halves as named fields on one
+// Composite server: exposes all surfaces as named fields on one
 // stub. Capnweb walks the property tree on demand, so callers
 // only pay for the half they reach.
-class WorkspaceRPCServer extends RpcTarget implements WorkspaceRPC {
-  // sync / shell are exposed as getters — capnweb's RpcTarget
+class WorkspaceRPCServer extends RpcTarget implements WorkspaceRPC, SessionRPC {
+  // The surfaces are exposed as getters — capnweb's RpcTarget
   // refuses to traverse plain instance properties (the readLoop
   // raises 'instance properties cannot be accessed over RPC').
   // Getters look like methods to the dispatch path.
@@ -299,6 +299,10 @@ class WorkspaceRPCServer extends RpcTarget implements WorkspaceRPC {
   get sync(): SyncRPC {
     return this.#sync;
   }
+  get session(): SessionRPC {
+    return this;
+  }
+  async ping(): Promise<void> {}
   get shell(): ShellRPC {
     return this.#shell;
   }
@@ -323,7 +327,7 @@ export function createShellServer(runner: RunnerLike): ShellRPC {
 }
 
 // Construct the composite WorkspaceRPC. The wire serves this on
-// /ws so clients reach `.sync` and `.shell` through one session.
+// /ws so clients reach `.session`, `.sync`, and `.shell` through one session.
 export function createWorkspaceServer(
   db: Database,
   runner: RunnerLike,
